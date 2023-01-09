@@ -1,0 +1,452 @@
+---
+title: "MLR3 Overview"
+author: "Evan Carey"
+output: 
+  html_document:
+    toc: yes
+    toc_float: true
+    toc_depth: '2'
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+```
+
+## Overview from the docs
+
+>> The (Machine Learning in R) mlr3 (Lang et al. 2019) package and ecosystem provide a generic, object-oriented, and extensible framework for classification, regression, survival analysis, and other machine learning tasks for the R language (R Core Team 2019) (task types are discussed in detail in ?sec-tasks-types). This unified interface provides functionality to extend and combine existing machine learning algorithms (learners), intelligently select and tune the most appropriate technique for a specific machine learning task, and perform large-scale comparisons that enable meta-learning. Examples of this advanced functionality include hyperparameter tuning (Chapter 4) and feature selection (Chapter 5). Parallelization of many operations is natively supported (Section 9.1).
+
+>> mlr3 has similar overall aims to caret, tidymodels, scikit-learn for Python, and MLJ for Julia. In general mlr3, is designed to provide more flexibility than other machine learning frameworks while still offering easy ways to use advanced functionality. While in particular tidymodels makes it very easy to perform simple machine learning tasks, mlr3 is more geared towards advanced machine learning. To get a quick overview of how to do things in the mlr3verse, see the mlr3 cheatsheets1.
+
+
+Review this introduction chapter for more details:
+
+https://mlr3book.mlr-org.com/intro.html
+
+
+## Reasons I use MLR3
+
+* Leverages data.table - fast and efficient for big data
+* Easy to run in parallel and control total resource utilization
+* Low level control for stacked modeling efforts
+
+
+```{r}
+# load all neede packages
+library(mlr3verse)
+```
+
+
+## Non-linear complex DGP number 4
+
+Let's go back to our prior example of a complex data generating process:
+
+```{r}
+# simulate some data, continuous outcome
+set.seed(42)
+n_obs <- 10000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  ifelse(x1>4,
+         -4*x2,
+         3*x2) +
+  2*scale(x1) + 
+  -4*scale(x1)*x2 +
+  -4*log(x1)*x2
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df4 <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df4
+```
+
+## Create/load dataset
+
+MLR3 starts by defining a `task`. This is essentially the dataset we will be working on. We identify this as a regression task, pass in data, and identify the target. 
+
+```{r}
+# create a task
+regr_task <- 
+  as_task_regr(df4,
+               target = 'y')
+```
+
+
+```{r}
+# examine task traits
+regr_task
+```
+
+We can access the outcome using the `$truth()`:
+
+```{r}
+# check data
+hist(regr_task$truth(), breaks = 50)
+```
+
+Recall the data generating process - we can access the underlying data from the task using `$data()`
+
+```{r}
+# visualize the relationship
+library(ggplot2)
+ggplot(regr_task$data(),aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+
+## Implement a single learner
+
+We will start by implementing a single learning algorithm. Prior to that, we need to split the dataset. We will do this manually for now, but will show how to do it differently in a moment. 
+
+```{r}
+# split data into 80/20 split - get row indices
+# You could also use partition() here, but I do not show it
+set.seed(34)
+train_ind <- 
+  sample(1:nrow(df4),
+         size = nrow(df4)*.8)
+```
+
+After we establish the task, we next establish the 'learner'. We identify a linear model as the learner. 
+
+
+```{r}
+# get linear model
+learner_lm = lrn('regr.lm')
+learner_lm
+```
+
+After establishing the learner, we can train it like so:
+
+```{r}
+# fit linear model
+learner_lm$train(regr_task,
+                 row_ids = train_ind)
+# check the model components
+learner_lm$model
+```
+
+We can now make predictions on the holdout dataset. Note the prediction object contains the original truth values and the predictions. 
+
+```{r}
+# predict using the hold out data
+prediction_lm <- 
+  learner_lm$predict_newdata(newdata = regr_task$data()[-train_ind])
+
+# check out resulting object
+print(prediction_lm)
+```
+
+Now we can assess performance. MLR3 contains many different performance measures - 
+
+```{r}
+head(as.data.table(mlr_measures))
+```
+
+Let's review just the regression measures. 
+
+```{r}
+as.data.table(mlr_measures)[task_type=='regr']
+```
+
+We create an object with multiple measures, then we can score the predictions.
+
+```{r}
+# ask for multiple scores back
+measures1 <- msrs(c("regr.mae", "regr.mse"))
+scores <- prediction_lm$score(measures1)
+print(scores)
+```
+
+## Using the resample functionality
+
+Instead of manually doing the hold-out samples, we can use the resampling functionality of `MLR3`.  
+
+```{r}
+# single hold out
+rr_holdout <- 
+  rsmp("holdout", ratio=0.8)
+print(rr_holdout)
+```
+We initiate the resampling object like so:
+
+```{r}
+# initiate resampling
+rr1 <-
+  resample(regr_task, 
+           learner_lm, 
+           rsmp("holdout", ratio=0.8))
+print(rr1)
+```
+
+This triggered the model fitting. As above we need to ask for the actual scores on the resulting object. 
+
+```{r}
+# check scores
+measures1 <- msrs(c("regr.mae", "regr.mse"))
+rr1$score(measures1)
+```
+
+## 5-fold resampling
+
+Instead of a simple holdout, we can do k-folds cross validation to use all of the data efficiently. See this link for more info on k-folds cross validation:
+
+https://en.wikipedia.org/wiki/Cross-validation_(statistics)
+
+
+```{r}
+# 5 fold resample
+cv_5 <- 
+  rsmp("cv", folds = 5)
+print(cv_5)
+```
+
+Note the instantiate == FALSE - this means it has not yet been established with respect to a dataset (task). 
+
+We call resample to initiate the model fits across all resamples:
+
+```{r}
+# instantiate resampling
+rr2 <-
+  resample(regr_task, 
+           learner_lm, 
+           cv_5)
+print(rr2)
+```
+
+We can now request scores as before:
+
+```{r}
+# check scores
+measures1 <- msrs(c("regr.mae", "regr.mse"))
+rr2$score(measures1)
+```
+
+If we want to aggregate to a single measure, there is an aggregate method available:
+
+```{r}
+## aggregate the measures
+rr2$aggregate(measures = measures1)
+```
+
+We can use autoplot to see the distribution of the results.
+
+```{r}
+# check distribution of results
+# pick a single measure
+library("mlr3viz")
+autoplot(rr2, measure = msr("regr.mae"))
+```
+
+## Implement a random forest
+
+- Another popular regression (and classification) algorithm is the random forest. 
+- In order to understand a random forest, you should first think about a decision tree.  
+- We can consider modeling data simply by making cutpoints on our predictors, then splitting the decision of the outcome. 
+- Visually, that might look like this in the context of our data:
+- If age < 40, deny credit card
+- If age > 40, then:
+    + If income > 5, accept credit card
+    + If income < 5, accept credit card
+    
+- Decision trees have a very nice appeal in that they are easy to understand and visualize. You can simply make a score card, and a human could easily make a decision on whether the outcome is yes or no. 
+- But they are not very accurate or flexible individually! How can we have a good model from a single decision tree? It seems unlikely. 
+- But what if we created many different decision trees, based on different subsets of the data? 
+- We could take random samples of the data, then get an optimal decision tree using a subset of the predictors for each sample.  
+- Each individual tree isn't that great, but perhaps the population of all those trees (the ensemble) would be good?  
+- That is the intuition behind a random forest!  
+
+Checkout this link for more info:   
+https://en.wikipedia.org/wiki/Random_forest
+
+
+```{r}
+# declare resampling, fit models
+rr <-
+  resample(regr_task, 
+           lrn("regr.ranger"), 
+           rsmp("cv", folds = 3))
+print(rr)
+```
+
+
+```{r}
+# check scores
+measures1 <- msrs(c("regr.mae", "regr.mse"))
+rr$score(measures1)
+```
+
+```{r}
+## aggregate the measures
+rr$aggregate(measures = measures1)
+```
+
+
+```{r}
+# check distribution of results
+# pick a single measure
+autoplot(rr, measure = msr("regr.mae"))
+```
+
+
+
+## Hyperparameter optimization
+
+We have not yet discussed model hyperparameters. Model parameters are something you are familiar with from linear regression - for example the beta coefficients. 
+Model hyper parameters are not quite the same...they are parameters that we set overtly, as opposed to parameters that are optimized internally in the model fit. 
+
+In the context of a random forest, we can set (At least) the following hyperparameters:
+
+* mtry: Number of variables to possibly split at in each node
+* min node size: Minimal node size (number of rows)
+
+However, what are the best values for these? We can optimize them by searching the parameter space. We try different combinations of parameters, then see what gives us the best predictive performance. 
+
+MLR3 has an auto-tuner functionality where we can create a new learner that performs hyper-parameter optimization:
+
+```{r}
+# setup auto tuner for ranger
+at_ranger <- auto_tuner(
+  method = tnr("random_search"),
+  learner = lrn("regr.ranger",
+              min.node.size = to_tune(5, 100),
+              mtry = to_tune(1, 2)),
+  resampling = rsmp("cv", folds = 3),
+  measure = msr("regr.mae"),
+  terminator = trm("evals", n_evals= 5)
+)
+at_ranger$id <- 'ranger_tuned'
+```
+
+After defining it, we can use it just like any other learner (but it will be slower).
+
+```{r}
+# instantiate resampling
+rr3 <-
+  resample(regr_task, 
+           at_ranger, 
+           rsmp("cv", folds = 3))
+print(rr3)
+```
+
+
+```{r}
+# check scores
+measures1 <- msrs(c("regr.mae", "regr.mse"))
+rr3$score(measures1)
+```
+
+
+```{r}
+## aggregate the measures
+rr3$aggregate(measures = measures1)
+```
+
+
+```{r}
+# check distribution of results
+# pick a single measure
+library("mlr3viz")
+autoplot(rr3, measure = msr("regr.mae"))
+```
+
+
+
+## Benchmarking multiple algorithms
+
+A common task is to compare multiple different learning algorithms (run an ML experiment), then report the results. 
+
+This is called 'benchmarking'.
+
+`MLR3` implements benchmarking using similar syntax as above. 
+
+We need to declare the following:
+
+* tasks (we could use multiple datasets)
+* learners to test (which could include autotuners)
+* resampling scheme for the benchmark
+
+```{r}
+# establish design
+design = benchmark_grid(
+  task = regr_task,
+  learners = lrns(c("regr.lm", "regr.ranger", "regr.xgboost"),
+                  predict_sets = c("train", "test")),
+  resamplings = rsmps("cv", folds = 3)
+)
+print(design)
+```
+After defining the benchmark grid, we call the benchmark function to initiate the training. 
+
+```{r}
+# execute experiment
+bmr = benchmark(design)
+```
+
+We can review the summary of the warnings and errors here:
+
+```{r}
+# show summary
+bmr
+```
+
+You check the results by requesting the measures to be calculated. Here we identify both testing and training, and both MSE and MAE:
+
+```{r}
+# check results
+measures1 <- 
+  list(msr("regr.mae",predict_sets = "train", id = "mae_train"),
+       msr("regr.mse",predict_sets = "train", id = "mse_train"),
+       msr("regr.mae",predict_sets = "test", id = "mae_test"),
+       msr("regr.mse",predict_sets = "test", id = "mse_test"))
+       
+tab = bmr$aggregate(measures1)
+print(tab[, .(task_id, learner_id, mae_train, mae_test,mse_train,mse_test)])
+```
+
+We can plot the results as before.
+
+```{r}
+# show MAE Results
+autoplot(bmr,
+         measure = msr("regr.mae",
+                       predict_sets = "test",
+                       id = "mae_test"))
+```
+
+See this discussion for extracting a  model from the benchmark for further prediction purposes:
+
+https://github.com/mlr-org/mlr3/issues/601
+
+
+## Conclusion
+
+MLR3 is an efficient and fast framework for implementing ML in R using native packages.
+
+Check out the MLR3 book for more in-depth details on how to use this package:
+
+https://mlr3book.mlr-org.com/
+
+Also you can check out the general website: 
+
+https://mlr3.mlr-org.com/

@@ -1,0 +1,1098 @@
+---
+title: "Predictive Models Overview"
+author: "Evan Carey"
+output: 
+  html_document:
+    toc: yes
+    toc_float: true
+    toc_depth: '2'
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+```
+
+## Overview
+
+In this notebook, we will explore the underlying ideas of developing predictive models. We will do this using fundamental R code to show the idea (first principles from a coding perspective). 
+
+We will focus on a continuous outcome context (regression), using simple linear regression as our learning model. 
+
+The data will be simulated each time to make the data generating process very clear. 
+
+
+## Data Generating Process number 1: simple unconditional Y
+
+Let’s start with a simple data generating process. I will simulate two predictor variables (X1 and X2), and then simulate the outcome variable (Y).  Y is independent of X1 and X2 in this first simulation. 
+
+```{r}
+# simulate some of todays data, continuous 
+set.seed(42)
+n_obs <- 10000
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y
+y_mean <- 8
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df1 <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df1
+```
+
+Recall our goal in machine learning is to use data we can see (todays data) to inform a learning algorithm that does a good job of predicting tomorrows data. 
+
+We typically cannot observe tomorrows data, but we will simulate it here using the same data generating process (DGP) to make it clear what we are doing. 
+
+```{r}
+# simulate some of tomorrows data, continuous 
+set.seed(68)
+n_obs <- 2000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y
+y_mean <- 8
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df1_future <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df1_future
+```
+
+Let’s examine the distribution of Y. Since it is independent of X1 and X2, we will just show a histogram.
+
+```{r}
+# checkout the data 
+df1[,hist(y,breaks = 50)]
+```
+
+As expected, the future data looks just like the current data since it is from the same data generating process.
+
+```{r}
+# checkout the data 
+df1_future[,hist(y,breaks = 50)]
+```
+
+### Our first learning algorithm
+
+Now we need to come up with a learning algorithm that gives the best prediction for the outcome variable Y. What do you think are some good potential simple learning algorithms for this prediction? Recall that the goal here is to simply get the best prediction for the outcome variable.
+
+
+We could try the mean:
+
+```{r}
+# what is the 'best' prediction for y?
+# try the mean
+df1[,mean(y)]
+```
+
+Or we could try the median:
+
+```{r}
+# what is the 'best' prediction for y?
+# try the median
+df1[,median(y)]
+```
+
+Or anything else you think is reasonable! 
+
+Let's stick with the mean. 
+
+Our next step is to make predictions using our learning algorithm: 
+
+
+```{r}
+# decide on a 'learning algorithm' - mean
+# make predictions for todays data
+df1[,y_pred := mean(y)]
+```
+
+
+How good is our prediction? How do we know if we have a 'good' learning algorithm? 
+
+
+We can look at the distribution of the training errors (errors from todays data) like so: 
+
+
+```{r}
+# calculate training errors
+df1[,y_pred_error := y - y_pred]
+# check out errors
+df1[,hist(y_pred_error,breaks=50)]
+```
+
+
+Is that good? How do we know? 
+
+Was our goal to get devise a learning algorithm that is good at predicting the training data? 
+
+No - we want a learning algorithm that is good at predicting the future data! 
+
+let's identify prediction errors on the future data. 
+
+First we make the prediction:
+
+```{r}
+# make predictions for tomorrows data, using todays data
+df1_future[,y_pred := mean(df1$y)]
+```
+
+Now we calculate the errors and examine them. Is a histogram a good way to summarize the errors? 
+
+```{r}
+# calculate generalization errors
+df1_future[,y_pred_error := y - y_pred]
+# check out errors
+df1_future[,hist(y_pred_error,breaks=50)]
+```
+
+
+How should we summarize these prediction errors? 
+
+Let's calculate the mean of this distribution: 
+
+```{r}
+# mean errors?
+df1_future[,mean(y_pred_error)]
+```
+
+Hmm - this number is close to zero. That is good but does not tell us much about the width of the distribution - we could have large erros, but as long as they are balanced the mean error is zero...
+
+Perhaps we can take the absolute value of the errors first, then calculate the mean:
+
+```{r}
+# mean absolute errors
+df1_future[,mean(abs(y_pred_error))]
+```
+
+Or alternatively we could square each error, then take the mean of the squared errors:
+
+```{r}
+# mean squared error
+df1_future[,mean(y_pred_error**2)]
+```
+
+What are the differences between these two approaches? How do they express our value system about the errors this model makes? 
+
+### Fitting a linear model conditional on X1 and X2
+
+Now we will fit a linear model using the `lm()` function. we can condition this model on a linear combination of X1 and X2. However, we know that Y is independent of X1 and X2...so we would not expect this to improve our learning algorithm.
+
+
+```{r}
+# should we condition on x1 and x2?
+# try a linear model
+mod1 <- 
+  lm(y ~ x1 + x2,
+     data=df1)
+```
+
+
+Is this a good model?
+
+Traditional summary:
+
+```{r}
+# traditionally we look at summary
+summary(mod1)
+```
+
+
+Is this model better?  We can compare it to the unconditional mean using this syntax:
+
+```{r}
+# fit the null model
+mod0 <- 
+  lm(y ~ 1,
+     data=df1)
+# compare these models 
+anova(mod0,mod1)
+```
+
+But recall we are doing machine learning...the question we need to ask is:
+
+Does it make better predictions...?
+
+### Comparing model performance
+
+Let's calculate the mean absolute error (MAE) for both models:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MAE
+# mod0 prediction MAE
+df1_future[,mean(abs(y-predict(mod0,data=df1_future)))]
+```
+
+
+```{r}
+# mod1 prediction MAE
+df1_future[,mean(abs(y-predict(mod1,data=df1_future)))]
+```
+
+The MAE is very similar. 
+
+We could also calculate the mean squared error:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MSE
+# mod0 prediction MSE
+df1_future[,mean((y-predict(mod0,data=df1_future))**2)]
+```
+
+
+```{r}
+# mod1 prediction MAE
+df1_future[,mean((y-predict(mod1,data=df1_future))**2)]
+```
+
+The MSE is very similar. 
+
+As expected, the predictive performance on the out of sample future data is similar between these two methods for this data generating process. We have just shown two different learning algorithms:
+
+* implemented both algorithms  
+* made predictions using those algorithms on the future data  
+* and then compared a summary statistic of the prediction error.  
+
+Any questions about that process ?
+
+## Data Generating process number 2 
+
+We will now look at a slightly more complex data generating process. Our outcome variable Y now depends on both X1 and X2. The data generating process is still straightforward, and will be well captured by a linear model.
+
+```{r}
+# simulate some of todays data, continuous 
+set.seed(42)
+n_obs <- 10000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  2*scale(x1) + 
+  -4*x2
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df2 <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df2
+```
+
+As before, we will simulate the future out of sample data using the same data generating process. As a reminder, we typically do not observe this data. However, the goal of machine learning is to maximize predictive accuracy on this data that we cannot observe.
+
+```{r}
+# simulate some of tomorrows data, continuous 
+set.seed(65)
+n_obs <- 10000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  2*scale(x1) + 
+  -4*x2
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df2_future <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df2_future
+```
+
+Let's visualize the data generating process:
+
+```{r}
+# visualize the relationship
+library(ggplot2)
+ggplot(df2_future,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+### Fit a series of linear models
+
+We will now fit a series of linear models similar to what we just did, and compare their predictive accuracy on the future data set.
+
+```{r}
+# try a linear model
+mod0 <- 
+  lm(y ~ 1,
+     data=df2)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2
+mod1 <- 
+  lm(y ~ x1 + x2,
+     data=df2)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2 with an interaction
+mod2 <- 
+  lm(y ~ x1 + x2 + x1:x2,
+     data=df2)
+```
+
+### Compare model performance
+
+Which of these models perform the best ? 
+
+Recall our primary interest...does it make better predictions...?
+
+This is a summary of the **training error**:
+
+```{r}
+# compare predictions on todays data from these two models!
+# compare MAE
+df2[,mean(abs(y-predict(mod0,data=df2)))]
+df2[,mean(abs(y-predict(mod1,data=df2)))]
+df2[,mean(abs(y-predict(mod2,data=df2)))]
+```
+
+This is a summary of the **generalization error**:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MAE
+df2_future[,mean(abs(y-predict(mod0,newdata=df2_future)))]
+df2_future[,mean(abs(y-predict(mod1,newdata=df2_future)))]
+df2_future[,mean(abs(y-predict(mod2,newdata=df2_future)))]
+```
+
+
+The MAE are not similar! 
+
+Model 1 is much better than model 0.
+
+Model 1 and 2 are similar.
+
+We can do the same comparison with the MSE.
+
+Training error:
+
+```{r}
+# compare predictions on todays data from these two models!
+# compare MSE
+df2[,mean((y-predict(mod0,newdata=df2))**2)]
+df2[,mean((y-predict(mod1,newdata=df2))**2)]
+df2[,mean((y-predict(mod2,newdata=df2))**2)]
+```
+
+Generalization error:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MSE
+df2_future[,mean((y-predict(mod0,newdata=df2_future))**2)]
+df2_future[,mean((y-predict(mod1,newdata=df2_future))**2)]
+df2_future[,mean((y-predict(mod2,newdata=df2_future))**2)]
+```
+
+
+The MSE are not similar! 
+
+Model 1 is much better than model 0.
+
+Model 1 and 2 are similar.
+
+
+
+What is the difference between these two models? 
+
+Model 1 has more **capacity**. 
+
+In this case, the data generating process was sufficiently complex that the increased capacity of model 1 gave us better predictive performance. 
+
+Model 2 has even more **capacity** than model 1 (there is an interaction term). But the performance did not improve...because the underlying data generating process was well captured by model 1. 
+
+In the first example, we did not get better predictive performance - because the underlying data generating process was well captured by a simple mean (no need to condition on X1 or x2). 
+
+
+## Data Generating Process Number 3
+
+I will now make the data generating process even more complex - then we will fit some models and summarize the performance. 
+
+In this DGP, there is now an interaction between X1 and X2. 
+
+```{r}
+# simulate some of todays data, continuous 
+set.seed(42)
+n_obs <- 10000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  -4*x2 +
+  2*scale(x1) + 
+  -4*scale(x1)*x2 
+  
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df3 <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df3
+```
+
+As before, we need to simulate tomorrow's data as well: 
+
+```{r}
+# simulate some of tomorrows data, continuous 
+set.seed(65)
+n_obs <- 2000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  -4*x2 +
+  2*scale(x1) + 
+  -4*scale(x1)*x2 
+  
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df3_future <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df3_future
+```
+
+
+```{r}
+# visualize the relationship
+library(ggplot2)
+ggplot(df3,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+### Fit a series of models
+
+Fit the same 3 models:
+
+```{r}
+# try a linear model
+mod0 <- 
+  lm(y ~ 1,
+     data=df3)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2
+mod1 <- 
+  lm(y ~ x1 + x2,
+     data=df3)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2 with an interaction
+mod2 <- 
+  lm(y ~ x1 + x2 + x1:x2,
+     data=df3)
+```
+
+
+### Compare model performance
+
+Which of these models perform the best ? 
+
+Recall our primary interest...does it make better predictions...?
+
+This is a summary of the **training error**:
+
+
+```{r}
+# compare predictions on todays data from these two models!
+# compare MAE
+df3[,mean(abs(y-predict(mod0,newdata=df3)))]
+df3[,mean(abs(y-predict(mod1,newdata=df3)))]
+df3[,mean(abs(y-predict(mod2,newdata=df3)))]
+```
+
+This is a summary of the **generalization error**:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MAE
+df3_future[,mean(abs(y-predict(mod0,newdata=df3_future)))]
+df3_future[,mean(abs(y-predict(mod1,newdata=df3_future)))]
+df3_future[,mean(abs(y-predict(mod2,newdata=df3_future)))]
+```
+
+
+The MAE are not similar! 
+
+Model 1 is much better than model 0.
+
+Model 2 is much better than model 1.
+
+Let's repeat this with MSE.
+
+This is a summary of the **training error**:
+
+```{r}
+# compare predictions on todays data from these two models!
+# compare MSE
+df3[,mean((y-predict(mod0,newdata=df3))**2)]
+df3[,mean((y-predict(mod1,newdata=df3))**2)]
+df3[,mean((y-predict(mod2,newdata=df3))**2)]
+```
+
+This is a summary of the **generalization error**:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MSE
+df3_future[,mean((y-predict(mod0,newdata=df3_future))**2)]
+df3_future[,mean((y-predict(mod1,newdata=df3_future))**2)]
+df3_future[,mean((y-predict(mod2,newdata=df3_future))**2)]
+```
+
+The MSE are not similar! 
+
+Model 1 is much better than model 0.
+
+Model 2 is much better than model 1.
+
+Why did we see this result? Because the underlying data generating process (reproduced below) was sufficiently complex that the additional **capacity** in model 3 gave better predictive power.
+
+## Review the 3 DGP
+
+Recall the different DGP so far:
+
+```{r}
+# visualize the relationship for DGP1
+library(ggplot2)
+ggplot(df1,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+
+```{r}
+# visualize the relationship for DGP2
+library(ggplot2)
+ggplot(df2,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+
+```{r}
+# visualize the relationship for DGP3
+library(ggplot2)
+ggplot(df3,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+Do you see the increasing complexity of the DGP? 
+
+Models with more capacity can give better predictive performance - if the underlying DGP has complexity that is not well captured by the current modeling approach. 
+
+But - increasing model capacity will not always improve predictive power! 
+
+## Non-linear complex DGP number 4
+
+I will now make the data generating process even more complex - then we will fit some models and summarize the performance. 
+
+```{r}
+# simulate some of todays data, continuous 
+set.seed(42)
+n_obs <- 10000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  ifelse(x1>4,
+         -4*x2,
+         3*x2) +
+  2*scale(x1) + 
+  -4*scale(x1)*x2 +
+  -4*log(x1)*x2
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df4 <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df4
+```
+
+As before, we simulate some of tomorrow's data. 
+
+
+```{r}
+# simulate some of tomorrows data, continuous 
+set.seed(65)
+n_obs <- 2000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  ifelse(x1>4,
+         -4*x2,
+         3*x2) +
+  2*scale(x1) + 
+  -4*scale(x1)*x2 +
+  -4*log(x1)*x2
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df4_future <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df4_future
+```
+
+Let's visualize the DGP:
+
+```{r}
+# visualize the relationship
+library(ggplot2)
+ggplot(df4,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+### Fit a series of models
+
+Fit the same 3 models as before:
+
+```{r}
+# try a linear model
+mod0 <- 
+  lm(y ~ 1,
+     data=df4)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2
+mod1 <- 
+  lm(y ~ x1 + x2,
+     data=df4)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2 with an interaction
+mod2 <- 
+  lm(y ~ x1 + x2 + x1:x2,
+     data=df4)
+```
+
+
+### Compare model performance
+
+Which of these models perform the best ? 
+
+Recall our primary interest...does it make better predictions...?
+
+This is a summary of the **training error**:
+
+
+```{r}
+# compare predictions on todays data from these two models!
+# compare MAE
+df4[,mean(abs(y-predict(mod0,newdata=df4)))]
+df4[,mean(abs(y-predict(mod1,newdata=df4)))]
+df4[,mean(abs(y-predict(mod2,newdata=df4)))]
+```
+
+This is a summary of the **generalization error**:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MAE
+df4_future[,mean(abs(y-predict(mod0,newdata=df4_future)))]
+df4_future[,mean(abs(y-predict(mod1,newdata=df4_future)))]
+df4_future[,mean(abs(y-predict(mod2,newdata=df4_future)))]
+```
+
+
+The MAE are not similar! 
+
+Model 1 is much better than model 0.
+
+Model 2 is much better than model 1.
+
+We can do the same comparison with MSE.
+
+This is a summary of the **training error**:
+
+```{r}
+# compare predictions on todays data from these two models!
+# compare MSE
+df4[,mean((y-predict(mod0,newdata=df4))**2)]
+df4[,mean((y-predict(mod1,newdata=df4))**2)]
+df4[,mean((y-predict(mod2,newdata=df4))**2)]
+```
+
+This is a summary of the **generalization error**:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MSE
+df4_future[,mean((y-predict(mod0,newdata=df4_future))**2)]
+df4_future[,mean((y-predict(mod1,newdata=df4_future))**2)]
+df4_future[,mean((y-predict(mod2,newdata=df4_future))**2)]
+```
+
+The MSE are not similar! 
+
+Model 1 is much better than model 0.
+
+Model 2 is much better than model 1.
+
+Model 3 gives us the best fit here. However, we know that model 3 is not the correct functional form of the true underlying data generating process. It is closer than model one and model 2, but we should be able to do better than this.
+
+The underlying challenge is that we do not know the data generating process in practice. We can look for systematic errors in our predictions conditional on our input variables to get a hint, but we never truly know if we have captured the underlying data generating process. We can only assess the relative performance of the different learning algorithms we have chosen to test.
+
+
+
+## But I can't observe the future data...
+
+
+Another key point is that we do not actually observe the future data! In all of the examples thus far we have simulated the future data so we could directly calculate the model performance on it. We do this to drive home the point that the goal of the machine learning process is to generate accurate predictions on that future unobserved data.
+
+But if we do not observe that data, how can we assess performance on that data set? 
+
+We must somehow use our observed data and make assumptions that the observed data is a good representation of the unobserved data. Under that assumption, we could do something like split the data into parts, and keep some of those parts off to the side as representations of the future data.
+
+### Simple testing/training splits
+
+We start with an 80/20 split:
+
+```{r}
+# split data into 80/20 split
+set.seed(34)
+train_ind <- 
+  sample(1:nrow(df4),
+         size = nrow(df4)*.8)
+df4_train <- 
+  df4[train_ind]
+df4_test <- 
+  df4[-train_ind]
+```
+
+Check the dimensionality:
+
+```{r}
+nrow(df4_train)
+```
+
+Check the dimensionality:
+
+```{r}
+nrow(df4_test)
+```
+
+### Fit a series of models 
+
+For brevity sake, I only show fitting a single model here. 
+
+Now we use the df4_train to fit models, and the df4_test to represent the future data.
+
+
+```{r}
+# try a linear model conditional on x1 and x2
+mod1 <- 
+  lm(y ~ x1 + x2,
+     data=df4_train)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2 with an interaction
+mod2 <- 
+  lm(y ~ x1 + x2 + x1:x2,
+     data=df4_train)
+```
+
+
+```{r}
+# compare predictions on hold out data from these two models!
+# compare MSE
+df4_test[,mean((y-predict(mod1,newdata=df4_test))**2)]
+df4_test[,mean((y-predict(mod2,newdata=df4_test))**2)]
+```
+
+
+## But what about estimating model error? 
+
+We are often interested in commenting on the expected performance of the chosen learning algorithm. 
+
+But if we have a simple binary split (testing/training), then we cannot calculate that performance. We have already used the testing data to select a learning algorithm - so the performance metric on that testing data is likely optimistic. 
+
+Instead we should split our data into 3 chunks - training, validation, testing: 
+
+* Training - converge model parameters
+* Validation - select model hyperparameters (more on this to come), choose between models
+* Testing - estimate final chosen learning algorithm model performance 
+
+### Split into train/validate/test
+
+```{r}
+# split data into 60/20/20 split
+# start with training data
+set.seed(34)
+train_ind <- 
+  sample(1:nrow(df4),
+         size = nrow(df4)*.6)
+df4_train <- 
+  df4[train_ind]
+# now split the rest in half for test and validate
+test_ind <- 
+  sample(1:nrow(df4[-train_ind]),
+         size = nrow(df4[-train_ind])*.5)
+df4_test <- 
+  df4[-train_ind][test_ind]
+df4_validate <- 
+  df4[-train_ind][-test_ind]
+```
+
+Check dimensionality:
+
+```{r}
+nrow(df4_train)
+```
+
+Check dimensionality:
+
+```{r}
+nrow(df4_validate)
+```
+
+Check dimensionality:
+
+```{r}
+nrow(df4_test)
+```
+### Fit a series of models 
+
+We now do the following:  
+
+* fit models on the training data  
+* compare/choose models on the validation data  
+* estimate out of sample predictive power on the test data  
+
+
+```{r}
+# try a linear model conditional on x1 and x2
+mod1 <- 
+  lm(y ~ x1 + x2,
+     data=df4_train)
+```
+
+
+```{r}
+# try a linear model conditional on x1 and x2 with an interaction
+mod2 <- 
+  lm(y ~ x1 + x2 + x1:x2,
+     data=df4_train)
+```
+
+
+```{r}
+# compare predictions on hold out data from these two models!
+# compare MSE
+df4_validate[,mean((y-predict(mod1,newdata=df4_validate))**2)]
+df4_validate[,mean((y-predict(mod2,newdata=df4_validate))**2)]
+```
+
+```{r}
+# pick model 2 as the winner, then estimate performance using the final dataset:
+df4_test[,mean((y-predict(mod2,newdata=df4_test))**2)]
+```
+
+
+## Exploring more learning algorithms: random forest, elastic net regression, gradient boosting 
+
+Can we do even better than the linear model with an interaction? We should be able to, since the DGP is more complex than that with the stepwise function. 
+
+Recall this is the DGP visually:
+
+```{r}
+# visualize the relationship
+library(ggplot2)
+ggplot(df4,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+
+Let's say we are considering implementing the following learning algorithms and testing their predictive performance (we will go into more details on these later):
+
+* elastic net regression via `glmnet`  https://en.wikipedia.org/wiki/Elastic_net_regularization  
+* random forest via `ranger`  https://en.wikipedia.org/wiki/Random_forest   
+* Gradient boosting via `xgboost` https://en.wikipedia.org/wiki/Gradient_boosting  
+
+How can we implement these different learning algorithms? 
+
+If we reviewed the `ranger` documentation, we would find this sort of code to fit the model:
+
+```{r}
+# fit random forest with ranger
+library(ranger)
+mod_ranger <- 
+  ranger(formula = y ~ x1 + x2, 
+         data = df4_train, 
+         num.trees=100,
+         sample.fraction = .6,
+         mtry=2)
+```
+
+We can make predictions using code like this: 
+
+```{r}
+## make predictions from ranger
+predict(mod_ranger, df4_validate)$prediction[1:10]
+```
+
+### Compare model performance
+
+We can add the ranger model into the comparison:
+
+```{r}
+# compare predictions on tomorrows data from these two models!
+# compare MSE
+df4_validate[,mean((y-predict(mod0,newdata=df4_validate))**2)]
+df4_validate[,mean((y-predict(mod1,newdata=df4_validate))**2)]
+df4_validate[,mean((y-predict(mod2,newdata=df4_validate))**2)]
+df4_validate[,mean((y-predict(mod_ranger, df4_validate)$prediction)**2)]
+```
+
+The ranger model came in second place, but is quite close to the linear model with an interaction. 
+
+### Fitting the other models? 
+
+But how do we fit the elastic net model, or the xgboost model? We would need to review more documentation...
+
+
+Also we have written a lot of code here! Things we have done:
+
+* Split data into subsets
+* Calculate different performane metrics
+* fit different models from different packages
+* compare all these results
+* choose a winner
+* estimate the final model performance
+
+And we wrote a lot of it by hand...
+
+This is where the `MLR3` package comes into play. `MLR3` (among others) offers a unified package for doing this sort of work. We do not have to worry about how to code all this, or the different implementations of the packages. Instead, we learn a single package framework for conducting ML experiments. 
+

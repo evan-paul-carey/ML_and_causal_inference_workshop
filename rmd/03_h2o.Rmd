@@ -1,0 +1,390 @@
+---
+title: "MLR3 Overview"
+author: "Evan Carey"
+output: 
+  html_document:
+    toc: yes
+    toc_float: true
+    toc_depth: '2'
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Overview
+===========================
+- Machine Learning Regression Review
+- Implementing GLMs
+- Hyperparameter grid searches
+- Random Forests
+- Automatic Machine Learning
+
+
+Regression Models in Machine Learning
+===========================
+
+- We will now focus on supervised machine learning, where the outcome is continuous.
+- This is typically referred to as regression, and we will be estimating the mean of the outcome as a function of various predictors. 
+- We assume you have already learned about the general steps in machine learning, and we will focus on the implementation in H2O.
+- Here is a quick review - 
+
+- We start with data import and cleaning
+    +  You should implement any feature engineering at this stage
+    +  Examine the data for missingness
+    +  Examine the data for colliniarity of predictors
+    +  Identify any low variance predictors (near constant or constant predictors)
+
+- Next we establish training, validation, and testing data. 
+- You may decide to use k-folds cross validation in place of a single validation data split
+- We will decide on the function to use for optimizing and evaluating the models (AIC, mean squared error, etc)
+- We will fit various models to the training data, using the validation data (or internal cross-validation) to optimize hyper-parameters. 
+- We will identify the best model (or ensemble of models), then evaluate the results on the test set. 
+- Compare the model performance on the training data, the validation data, and the testing data for consistency. 
+- Large decreases in performance on the testing data (compared to training/validation) indicates we have overfit. 
+- And always remember...it is highly unlikely that your model will fit this good on future data, due to the inherent challenge of truly approximating 'out of sample data' from your dataset. 
+
+
+Data of interest 
+===========================
+
+```{r}
+library(data.table)
+# simulate some of todays data, continuous 
+set.seed(42)
+n_obs <- 10000
+# simulate x1 (continuous)
+x1 <- rlnorm(n = n_obs,
+             meanlog = log(4),
+             sdlog = log(1.2))
+# simulate x2 (binary)
+x2 <- rbinom(n = n_obs,
+             size = 1,
+             prob = 0.3)
+
+# simulate y, now conditional on X1 and X2
+y_mean <- 
+  8 +
+  ifelse(x1>4,
+         -4*x2,
+         3*x2) +
+  2*scale(x1) + 
+  -4*scale(x1)*x2 +
+  -4*log(x1)*x2
+  
+y_sd <- 3
+y <- rnorm(n = n_obs,
+           mean = y_mean,
+           sd = y_sd)
+
+# make dataframe
+df4 <- data.table(y,
+                  x1,
+                  x2)
+# check it out 
+df4
+```
+
+
+Let's visualize the DGP:
+
+```{r}
+# visualize the relationship
+library(ggplot2)
+ggplot(df4,aes(x1,y,group=x2, color=x2)) + 
+  geom_point(alpha=0.1) + 
+  geom_smooth()
+```
+
+
+Load Data into h2o
+===========================
+- We will use some home sale price data from Texas, that is available in the ggplot2 pack in R. 
+- First I initialize the session, then we load up the data from R. 
+
+```{r}
+# Load
+library(h2o)
+
+# Initiate h2o session
+h2o.init(ip='localhost',
+         port = 54321,
+         nthreads = -1,  # use all available threads
+         max_mem_size = '2G') # can also specify mem size 
+# clean slate
+h2o.removeAll()
+h2o.ls()
+```
+
+```{r}
+## import to h2o
+df4.hex <-
+  as.h2o(df4,
+         'df4.hex')
+h2o.ls()
+```
+
+```{r}
+## Focus on the Outcome
+summary(df4.hex$y)
+```
+
+
+
+Make Training/Validation/Testing Splits
+===================================
+
+- I will use internal cross validation on the training data, so I am only making one split here. 
+- You can use the `h2o.splitFrame()` function to do simple splits based on proportions. 
+- It will not be exact, but rather just approximate. Remember, this is for typically large dataset, so and approximately exact split is fine. 
+
+```{r}
+## Make a training, and testing split
+df4_split <-
+  h2o.splitFrame(df4.hex)
+## Identify training
+df4_train <-
+  df4_split[[1]]
+## Identify testing
+df4_test <-
+  df4_split[[2]]
+## Notice the key store is not getting updated
+h2o.ls()
+## That is fine. The R Pointer still works
+## The object just has a different name in the h2o store
+
+```
+
+
+Standard Regression in H2O
+===========================
+
+- We will start by implementing what I think of as 'standard' regression using h2o. 
+- This is a general linear model, with an identity link and a Gaussian family. This is called normal linear regression, or just linear regression. 
+- If we are talking about machine learning, why am I showing you basic linear regression?!?
+- This is actually really useful. H2O has implemented a distributed version of traditional linear regression, including likelihood based statistics and p-values available. 
+- If you are interested in inference (instead of just prediction), you should be doing this sort of thing instead of the 'fancier' machine learning models. 
+- If you are working on big enough data, you can run out of memory even doing basic linear models like this. So this is a great addition to R from H2O. 
+- The `h2o.glm()` function also allows regularization (for things like elastic net, LASSO, or ridge regression). For now we will focus on regular GLM with no regularization. 
+- I usually start by fitting a 'null model' (an intercept only model). I am not sure how to do that in H2O though (maybe not currently possible - I get errors about needing at least one variable), so I begin with a predictor already in the model. 
+- Let's start by fitting the model:
+
+```{r}
+## GLM - Gaussian
+## Standard model (no regularization)
+## The default is to standardize the predictors prior to fitting
+## this is reasonable to do!
+## Compute p-values is allowed since there is no regularization.
+df4_glm_1 <-
+  h2o.glm(y = 'y',
+          x = 'x1',
+          training_frame = df4_train,
+          model_id = 'df4_glm_1',
+          family = 'gaussian',
+          lambda=0,
+          compute_p_values = T)
+```
+
+- The returning object is an H2O model object, which is in the H2O workspace (not the R workspace). The object we see in R is just a pointer!
+- You can summarize the model using the following commands:
+
+```{r}
+## Checkout model
+summary(df4_glm_1)
+df4_glm_1
+h2o.aic(df4_glm_1) # AIC is penalized likelihood
+h2o.mse(df4_glm_1)
+## Overall performance
+h2o.performance(df4_glm_1)
+```
+
+Model Evaluation
+===============================
+
+- The model coefficients can be extracted easily, and you can make predictions on new datasets.
+
+```{r}
+## Extract Coefficients
+df4_glm_1@model$coefficients_table
+
+## Make predictions on new data
+h2o.predict(df4_glm_1,
+            newdata = df4_test)
+```
+
+
+- You can also score a new dataset and request performance metrics with one call:
+
+```{r}
+h2o.performance(df4_glm_1,
+                newdata = df4_test)
+```
+
+Regression with Multiple Predictors
+=================================
+
+- There is no formula style interface for these modeling objects. So if you want multiple predictors, you will need to pass in a vector of strings of the predictors in the model. 
+
+```{r}
+## Implement Multiple Predictors
+## GLM - Gaussian
+## Standard model (no regularization)
+## Compute p-values
+x_pred <- 
+  c('x1','x2')
+df4_glm_2 <-
+  h2o.glm(y = 'y',
+          x = x_pred,
+          training_frame = df4_train,
+          model_id = 'df4_glm_2',
+          family = 'gaussian',
+          lambda=0,
+          compute_p_values = T)
+## Checkout model
+df4_glm_2
+summary(df4_glm_2)
+h2o.aic(df4_glm_2)
+h2o.mse(df4_glm_2)
+```
+
+- And we can evaluate the performance just as we did before. 
+
+```{r}
+## Overall performance
+h2o.performance(df4_glm_2)
+```
+
+
+Interaction Terms in Models
+===========================
+- There will be some later modeling approaches that automatically handle potential interaction terms. 
+- However, we need to request them specifically when using a GLM framework (true for any glm, h2o or otherwise). 
+- With no formula style interface, interactions get a bit strange. 
+- You can identify a list of interaction variables, then h2o will perform all pairwise interactions. 
+- Alternatively, you can list the individual pairs of interactions you want to fit.
+
+```{r}
+#### Interactions
+## These are hard!
+## No formula
+## we can add all pairwise interactions on a subset of predictors
+## or list them out specifically
+## Add predictors
+x_pred <- 
+  c('x1','x2')
+df4_glm_4 <-
+  h2o.glm(y = 'y',
+          x = x_pred,
+          training_frame = df4_train,
+          model_id = 'df4_glm_4',
+          family = 'gaussian',
+          interactions = c('x1','x2'),
+          lambda=0,
+          compute_p_values = T)
+
+## Checkout model
+summary(df4_glm_4)
+## Compare fits
+h2o.aic(df4_glm_4)
+h2o.aic(df4_glm_4)
+## lower AIC is better
+## Overall performance
+h2o.performance(df4_glm_4)
+
+
+```
+
+
+Random Forests
+================================
+- Another model offered by H2O is the classic random forest. 
+- Although you may think of this as a classification model, it works in regression as well.
+- People like random forests because the default parameters work well, and it is not challenging to optimize the hyperparameters. 
+
+```{r}
+## Implementing a (distributed) random forest for regression
+df_rf_1 <-
+  h2o.randomForest(y = 'y',
+                   x = x_pred,
+                   training_frame = df4_train,
+                   nfolds = 10,
+                   model_id = 'df_rf_1',
+                   ntrees = 100, # Max trees 
+                   stopping_rounds = 2, # convergence criteria
+                   score_each_iteration = T,
+                   seed = 42)
+summary(df_rf_1)
+df_rf_1@model$cross_validation_metrics
+```
+
+
+- Here I will optimize over the number of trees and the max tree depth. 
+- You can use the grid function to perform this optimization:
+
+```{r}
+## Use a grid to train the hyperparameters
+df4_rf_grid <-
+  h2o.grid(algorithm = 'randomForest',
+           grid_id = 'df4_rf_grid',
+           y = 'y',
+           x = x_pred,
+           training_frame = df4_train,
+           hyper_params = list(ntrees = c(100,300,500),
+                               max_depth = c(2,3)),
+           stopping_rounds = 2, # convergence criteria
+           seed = 42,
+           nfolds = 10)
+summary(df4_rf_grid)
+## Select best model
+rf_winner <-
+  h2o.getModel(df4_rf_grid@model_ids[[1]])
+summary(rf_winner)
+```
+
+
+Automatic Machine Learning
+================================
+- H2O includes some functionality called 'automatic machine learning'. 
+- This is an effort to automate machine learning, so the user does not have to think about all the different possible algroithms to fit. 
+- Instead, the use will input the data, the X and Y arguments, and the maximum runtime. H2O will then give you the best possible model, given those constraints. 
+- This is an interesting idea...do we even need to be so 'hand's on' for machine learning? Maybe not...
+- Our time may be better spent wrangling data and results, and getting creative about feature engineering...
+- The H2O documentation does say that 'deep learning' can often give superior results to this algorithm, but that the skill level required (familiarity with deep learning) is very high to achieve that regularly. 
+
+
+```{r, eval=FALSE}
+## Automatic machine learning
+df4_autoML <- 
+  h2o.automl(y = 'y',
+             x = x_pred,
+             training_frame = df4_train,
+             nfolds = 5,
+             project_name = 'df4_autoML',
+             max_runtime_secs = 30) # change this if you want!
+```
+
+```{r, eval=FALSE}
+## Check performance
+df4_autoML
+```
+
+
+```{r, eval=FALSE}
+# Check the winning model
+df4_autoML_stats<-
+  h2o.performance(df4_autoML@leader, # extract best model
+                  newdata = df4_test)
+df4_autoML_stats
+```
+
+
+
+What we Covered
+===========================
+
+- Machine Learning Regression Review
+- Implementing GLMs
+- Hyperparameter grid searches
+- Random Forests
+- Automatic Machine Learning
