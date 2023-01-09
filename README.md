@@ -4,7 +4,7 @@ This is the repository for files for a workshop on ML and Causal Inference.
 
 ## Files not yet posted
 
-The finalized files are not yet available. I will update this text once they are posted and you will be able to download them from this repository. 
+The finalized files are posted.
 
 ## Workshop Description
 
